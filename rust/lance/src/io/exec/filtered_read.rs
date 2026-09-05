@@ -1,6 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: Copyright The Lance Authors
-use std::any::Any;
 use std::collections::{BTreeMap, HashMap};
 use std::pin::Pin;
 use std::sync::Mutex;
@@ -1863,10 +1862,6 @@ impl ExecutionPlan for FilteredReadExec {
         "FilteredReadExec"
     }
 
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-
     fn properties(&self) -> &Arc<PlanProperties> {
         &self.properties
     }
@@ -1886,7 +1881,7 @@ impl ExecutionPlan for FilteredReadExec {
     fn partition_statistics(
         &self,
         partition: Option<usize>,
-    ) -> datafusion::error::Result<Statistics> {
+    ) -> datafusion::error::Result<Arc<Statistics>> {
         let fragments = self
             .options
             .fragments
@@ -1923,10 +1918,10 @@ impl ExecutionPlan for FilteredReadExec {
                 total_rows
             };
 
-            return Ok(Statistics {
+            return Ok(Arc::new(Statistics {
                 num_rows: Precision::Exact(total_rows as usize),
                 ..datafusion::physical_plan::Statistics::new_unknown(self.schema().as_ref())
-            });
+            }));
         };
 
         // We could evaluate the indexed filter here but this is still during the planning
@@ -1961,7 +1956,7 @@ impl ExecutionPlan for FilteredReadExec {
             None,
         )?);
         let df_filter_exec = FilterExec::try_new(physical_filter, mock_input)?;
-        let mut df_stats = df_filter_exec.partition_statistics(partition)?;
+        let mut df_stats = (*df_filter_exec.partition_statistics(partition)?).clone();
 
         // If we have an after-filter range, we should apply it to the stats (the before-filter range
         // is applied in the mock input)
@@ -1997,7 +1992,7 @@ impl ExecutionPlan for FilteredReadExec {
             }
         });
 
-        Ok(df_stats)
+        Ok(Arc::new(df_stats))
     }
 
     fn with_new_children(
@@ -2889,10 +2884,7 @@ mod tests {
             assert_eq!(plan.options().scan_range_before_filter, None);
             assert_eq!(plan.fetch(), None);
             let new_plan = plan.with_fetch(Some(100)).unwrap();
-            let new_plan = new_plan
-                .as_any()
-                .downcast_ref::<FilteredReadExec>()
-                .unwrap();
+            let new_plan = new_plan.downcast_ref::<FilteredReadExec>().unwrap();
             assert_eq!(new_plan.options().scan_range_before_filter, Some(0..100));
             assert_eq!(new_plan.fetch(), Some(100));
         }
@@ -2920,10 +2912,7 @@ mod tests {
             assert_eq!(plan.options().scan_range_after_filter, None);
             assert_eq!(plan.fetch(), None);
             let new_plan = plan.with_fetch(Some(50)).unwrap();
-            let new_plan = new_plan
-                .as_any()
-                .downcast_ref::<FilteredReadExec>()
-                .unwrap();
+            let new_plan = new_plan.downcast_ref::<FilteredReadExec>().unwrap();
             assert_eq!(new_plan.options().scan_range_after_filter, Some(0..50));
             assert_eq!(new_plan.fetch(), Some(50));
         }

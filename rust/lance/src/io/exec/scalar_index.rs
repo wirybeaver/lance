@@ -167,10 +167,6 @@ impl ExecutionPlan for ScalarIndexExec {
         "ScalarIndexExec"
     }
 
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
-    }
-
     fn schema(&self) -> SchemaRef {
         INDEX_EXPR_RESULT_SCHEMA.clone()
     }
@@ -217,11 +213,11 @@ impl ExecutionPlan for ScalarIndexExec {
     fn partition_statistics(
         &self,
         _partition: Option<usize>,
-    ) -> datafusion::error::Result<datafusion::physical_plan::Statistics> {
-        Ok(datafusion::physical_plan::Statistics {
+    ) -> datafusion::error::Result<Arc<datafusion::physical_plan::Statistics>> {
+        Ok(Arc::new(datafusion::physical_plan::Statistics {
             num_rows: datafusion::common::stats::Precision::Exact(2),
             ..datafusion::physical_plan::Statistics::new_unknown(&INDEX_EXPR_RESULT_SCHEMA)
-        })
+        }))
     }
 
     fn metrics(&self) -> Option<MetricsSet> {
@@ -373,10 +369,6 @@ impl MapIndexExec {
 impl ExecutionPlan for MapIndexExec {
     fn name(&self) -> &str {
         "MapIndexExec"
-    }
-
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
     }
 
     fn schema(&self) -> SchemaRef {
@@ -661,10 +653,6 @@ async fn retain_fragments(
 impl ExecutionPlan for MaterializeIndexExec {
     fn name(&self) -> &str {
         "MaterializeIndexExec"
-    }
-
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
     }
 
     fn schema(&self) -> SchemaRef {

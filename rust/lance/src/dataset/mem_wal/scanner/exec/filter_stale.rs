@@ -5,7 +5,6 @@
 //!
 //! Used in vector search and FTS queries to detect stale results across LSM levels.
 
-use std::any::Any;
 use std::fmt;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -156,10 +155,6 @@ impl DisplayAs for FilterStaleExec {
 impl ExecutionPlan for FilterStaleExec {
     fn name(&self) -> &str {
         "FilterStaleExec"
-    }
-
-    fn as_any(&self) -> &dyn Any {
-        self
     }
 
     fn schema(&self) -> SchemaRef {

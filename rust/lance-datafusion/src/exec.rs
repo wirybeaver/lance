@@ -151,10 +151,6 @@ impl ExecutionPlan for OneShotExec {
         "OneShotExec"
     }
 
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
-    }
-
     fn schema(&self) -> arrow_schema::SchemaRef {
         self.schema.clone()
     }
@@ -240,10 +236,6 @@ impl std::fmt::Debug for TracedExec {
 impl ExecutionPlan for TracedExec {
     fn name(&self) -> &str {
         "TracedExec"
-    }
-
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
     }
 
     fn properties(&self) -> &Arc<PlanProperties> {
@@ -633,7 +625,8 @@ pub async fn analyze_plan(
     let analyze = Arc::new(AnalyzeExec::new(
         true,
         true,
-        vec![MetricType::SUMMARY],
+        vec![MetricType::Summary],
+        None,
         plan,
         schema,
     ));
@@ -887,10 +880,6 @@ impl ExecutionPlan for StrictBatchSizeExec {
         "StrictBatchSizeExec"
     }
 
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
-    }
-
     fn properties(&self) -> &Arc<PlanProperties> {
         self.input.properties()
     }
@@ -931,7 +920,7 @@ impl ExecutionPlan for StrictBatchSizeExec {
     fn partition_statistics(
         &self,
         partition: Option<usize>,
-    ) -> datafusion_common::Result<Statistics> {
+    ) -> datafusion_common::Result<Arc<Statistics>> {
         self.input.partition_statistics(partition)
     }
 
@@ -991,10 +980,6 @@ impl DisplayAs for HardCapBatchSizeExec {
 impl ExecutionPlan for HardCapBatchSizeExec {
     fn name(&self) -> &str {
         "HardCapBatchSizeExec"
-    }
-
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
     }
 
     fn properties(&self) -> &Arc<PlanProperties> {
@@ -1058,7 +1043,7 @@ impl ExecutionPlan for HardCapBatchSizeExec {
     fn partition_statistics(
         &self,
         partition: Option<usize>,
-    ) -> datafusion_common::Result<Statistics> {
+    ) -> datafusion_common::Result<Arc<Statistics>> {
         self.input.partition_statistics(partition)
     }
 

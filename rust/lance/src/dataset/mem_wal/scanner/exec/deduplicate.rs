@@ -3,7 +3,6 @@
 
 //! Deduplication execution node for LSM merge reads.
 
-use std::any::Any;
 use std::fmt;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -371,10 +370,6 @@ impl DisplayAs for DeduplicateExec {
 impl ExecutionPlan for DeduplicateExec {
     fn name(&self) -> &str {
         "DeduplicateExec"
-    }
-
-    fn as_any(&self) -> &dyn Any {
-        self
     }
 
     fn schema(&self) -> SchemaRef {

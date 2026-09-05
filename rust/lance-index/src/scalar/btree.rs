@@ -380,6 +380,7 @@ impl Ord for OrderableScalarValue {
                 panic!("Attempt to compare List with non-List")
             }
             (LargeList(_), _) => todo!(),
+            (ListView(_), _) | (LargeListView(_), _) => todo!(),
             (Map(_), Map(_)) => todo!(),
             (Map(left), Null) => {
                 if left.is_null(0) {

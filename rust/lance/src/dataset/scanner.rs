@@ -2095,11 +2095,13 @@ impl Scanner {
         Arc<datafusion_physical_expr::aggregate::AggregateFunctionExpr>,
         Option<Arc<dyn PhysicalExpr>>,
     )> {
+        #[allow(deprecated)]
         use datafusion::physical_planner::create_aggregate_expr_and_maybe_filter;
 
         let coerced_expr = self.coerce_aggregate_expr(expr, df_schema)?;
 
         // Note: order_by is already embedded in the AggregateFunctionExpr for ordered aggregates
+        #[allow(deprecated)]
         let (agg_expr, filter, _order_by) = create_aggregate_expr_and_maybe_filter(
             &coerced_expr,
             df_schema,
@@ -10680,7 +10682,7 @@ full_filter=name LIKE Utf8(\"test%2\"), refine_filter=name LIKE Utf8(\"test%2\")
     }
 
     fn find_filtered_read(plan: &dyn ExecutionPlan) -> Option<&FilteredReadExec> {
-        if let Some(f) = plan.as_any().downcast_ref::<FilteredReadExec>() {
+        if let Some(f) = plan.downcast_ref::<FilteredReadExec>() {
             return Some(f);
         }
         for child in plan.children() {
