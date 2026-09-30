@@ -48,7 +48,35 @@ pub use lance_tokenizer::Language;
 pub use scorer::{CombinedFieldsBM25Scorer, MemBM25Scorer, Scorer};
 pub use tokenizer::*;
 
-use crate::scalar::inverted::query::{FtsSearchParams, Tokens, uses_fuzzy_expansion};
+use crate::scalar::inverted::query::{
+    FtsSearchParams, Tokens, fuzzy_params_for_token, uses_fuzzy_expansion,
+};
+
+pub(crate) fn collapse_scored_rows(
+    rows: impl IntoIterator<Item = (u64, f32)>,
+    limit: usize,
+) -> Vec<(u64, f32)> {
+    let mut scores_by_row_id = HashMap::new();
+    for (row_id, score) in rows {
+        scores_by_row_id
+            .entry(row_id)
+            .and_modify(|existing| {
+                if score > *existing {
+                    *existing = score;
+                }
+            })
+            .or_insert(score);
+    }
+
+    let mut rows = scores_by_row_id.into_iter().collect::<Vec<_>>();
+    rows.sort_unstable_by(|(left_id, left_score), (right_id, right_score)| {
+        right_score
+            .total_cmp(left_score)
+            .then_with(|| left_id.cmp(right_id))
+    });
+    rows.truncate(limit);
+    rows
+}
 
 /// Canonical token vocabulary and BM25 statistics for one indexed query leaf.
 ///
@@ -118,6 +146,9 @@ pub(crate) fn final_query_tokens(
         return Ok(query_tokens.clone());
     }
 
+    let json_mode = indices
+        .first()
+        .and_then(|index| index.params().json_tokenizer_mode);
     let initial_capacity = query_tokens.len().min(params.max_expansions);
     let mut expanded_tokens = Vec::with_capacity(initial_capacity);
     let mut expanded_positions = Vec::with_capacity(initial_capacity);
@@ -143,7 +174,9 @@ pub(crate) fn final_query_tokens(
             // One source token has one canonical automaton across every
             // selected segment. Drop it after this source term so peak DFA
             // memory is independent of the number of query terms.
-            let automaton = FuzzyAutomaton::new(source_term, query_tokens.token_type(), params)?;
+            let token_params = fuzzy_params_for_token(json_mode, source_term, params);
+            let automaton =
+                FuzzyAutomaton::new(source_term, query_tokens.token_type(), &token_params)?;
             for index in indices {
                 index.collect_fuzzy_candidates_with_automaton(
                     &automaton,
@@ -438,11 +471,11 @@ impl InvertedIndexPlugin {
         params.validate_format_version()?;
         let format_version = params.resolved_format_version();
         let is_element_document = params.get_document_granularity().is_list_element();
-        let details = pbold::InvertedIndexDetails::try_from(&params)?;
         let mut inverted_index =
             InvertedIndexBuilder::new_with_fragment_mask(params, fragment_mask)
                 .with_progress(progress);
         let files = inverted_index.update(data, index_store, None).await?;
+        let details = pbold::InvertedIndexDetails::try_from(inverted_index.params())?;
         Ok(CreatedIndex {
             index_details: prost_types::Any::from_msg(&details).unwrap(),
             index_version: if is_element_document {
@@ -661,6 +694,14 @@ impl ScalarIndexPlugin for InvertedIndexPlugin {
 mod tests {
     use super::*;
     use crate::scalar::{BuiltinIndexType, ScalarIndexParams};
+
+    #[test]
+    fn test_row_limit_applies_after_max_score_deduplication() {
+        assert_eq!(
+            collapse_scored_rows([(3, 2.0), (1, 3.0), (1, 4.0), (2, 2.0)], 2),
+            vec![(1, 4.0), (2, 2.0)],
+        );
+    }
 
     #[test]
     fn test_sync_df_kill_switch_parser() {
