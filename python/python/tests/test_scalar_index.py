@@ -6781,7 +6781,7 @@ def test_json_inverted_match_query(tmp_path):
 
     # Test language match
     results = dataset.to_table(
-        full_text_query=MatchQuery("Language,str,english", "json_col")
+        full_text_query=MatchQuery("Language[*],str,english", "json_col")
     )
     assert results.num_rows == 3
 
