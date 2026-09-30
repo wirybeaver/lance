@@ -53,10 +53,13 @@ use crate::{Dataset, index::DatasetIndexInternalExt};
 use lance_index::metrics::MetricsCollector;
 use lance_index::scalar::inverted::builder::ScoredDoc;
 use lance_index::scalar::inverted::builder::document_input;
-use lance_index::scalar::inverted::document_tokenizer::{DocType, JsonTokenizer, LanceTokenizer};
+use lance_index::scalar::inverted::document_tokenizer::{
+    DocType, JsonTokenizer, JsonTokenizerMode, LanceTokenizer,
+};
 use lance_index::scalar::inverted::query::{
     BoostQuery, CombinedFieldsQuery, FtsQuery, FtsQueryNode, FtsSearchParams, MatchQuery, Operator,
-    PhraseQuery, Tokens, has_query_token, try_collect_query_tokens, uses_fuzzy_expansion,
+    PhraseQuery, Tokens, document_matches_query, effective_json_query_operator,
+    try_collect_query_tokens, uses_fuzzy_expansion,
 };
 use lance_index::scalar::inverted::tokenizer::document_tokenizer::TextTokenizer;
 use lance_index::scalar::inverted::{
@@ -2153,7 +2156,13 @@ fn tokenizer_for_match_query(
     let analyzer = TextAnalyzer::from(SimpleTokenizer::default());
     match index.tokenizer().doc_type() {
         DocType::Text => Box::new(TextTokenizer::new(analyzer)),
-        DocType::Json => Box::new(JsonTokenizer::new(analyzer)),
+        DocType::Json => {
+            let index_tokenizer = index.tokenizer();
+            let mode = index_tokenizer
+                .json_tokenizer_mode()
+                .unwrap_or(JsonTokenizerMode::SingleDocument);
+            Box::new(JsonTokenizer::new(analyzer).with_mode(mode))
+        }
     }
 }
 
@@ -3054,12 +3063,17 @@ impl ExecutionPlan for MatchQueryExec {
             )))?;
             let mut tokenizer = tokenizer_for_match_query(first_index, query.fuzziness);
             let tokens = try_collect_query_tokens(&query.terms, &mut tokenizer)?;
+            let operator = effective_json_query_operator(
+                tokenizer.json_tokenizer_mode(),
+                &tokens,
+                query.operator,
+            );
             record_tokenized_query(&tokenized_query, &tokens);
             let prepared = if let Some(prepared_query) = preset_prepared_query {
                 Arc::new(PreparedMatch {
                     query: prepared_query,
                     params: Arc::new(params),
-                    operator: query.operator,
+                    operator,
                 })
             } else {
                 let base_scorer = match (preset_base_scorer, shared_scorer) {
@@ -3080,7 +3094,7 @@ impl ExecutionPlan for MatchQueryExec {
                         &indices,
                         tokens,
                         params,
-                        query.operator,
+                        operator,
                         metrics.as_ref(),
                         base_scorer,
                     )
@@ -3576,37 +3590,6 @@ struct FlatMatchFilterStreamOptions {
     metrics_set: ExecutionPlanMetricsSet,
 }
 
-fn document_matches_query(
-    text: &str,
-    tokenizer: &mut Box<dyn LanceTokenizer>,
-    query_tokens: &Tokens,
-    operator: Operator,
-) -> bool {
-    match operator {
-        Operator::Or => has_query_token(text, tokenizer, query_tokens),
-        Operator::And => {
-            let mut remaining_positions = (0..query_tokens.len())
-                .map(|index| query_tokens.position(index))
-                .collect::<HashSet<_>>();
-            if remaining_positions.is_empty() {
-                return false;
-            }
-            let mut stream = tokenizer.token_stream_for_doc(text);
-            while let Some(token) = stream.next() {
-                for index in 0..query_tokens.len() {
-                    if token.text == query_tokens.get_token(index) {
-                        remaining_positions.remove(&query_tokens.position(index));
-                    }
-                }
-                if remaining_positions.is_empty() {
-                    return true;
-                }
-            }
-            false
-        }
-    }
-}
-
 impl DisplayAs for FlatMatchFilterExec {
     fn fmt_as(&self, t: DisplayFormatType, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         match t {
@@ -3762,7 +3745,7 @@ impl FlatMatchFilterExec {
         tokenizer: &mut Box<dyn LanceTokenizer>,
         query_tokens: &Tokens,
         operator: Operator,
-    ) -> BooleanArray {
+    ) -> Result<BooleanArray> {
         let text_col = text_col.as_string::<O>();
         let mut predicate = BooleanBuilder::with_capacity(text_col.len());
         for idx in 0..text_col.len() {
@@ -3773,10 +3756,10 @@ impl FlatMatchFilterExec {
                         tokenizer,
                         query_tokens,
                         operator,
-                    ),
+                    )?,
             );
         }
-        predicate.finish()
+        Ok(predicate.finish())
     }
 
     async fn build_filter_stream(
@@ -3838,6 +3821,11 @@ impl FlatMatchFilterExec {
             }
         };
         let query_tokens = Arc::new(try_collect_query_tokens(&query.terms, &mut tokenizer)?);
+        let query_operator = effective_json_query_operator(
+            tokenizer.json_tokenizer_mode(),
+            &query_tokens,
+            query.operator,
+        );
         record_tokenized_query(&tokenized_query, &query_tokens);
 
         let baseline = BaselineMetrics::new(&metrics_set, partition);
@@ -3848,7 +3836,6 @@ impl FlatMatchFilterExec {
             let mut tokenizer = tokenizer.box_clone();
             let elapsed_compute = elapsed_compute.clone();
             let resolved_field = resolved_field.clone();
-            let query_operator = query.operator;
             async move {
                 let batch = batch_result?;
                 let _t = elapsed_compute.timer();
@@ -3863,7 +3850,7 @@ impl FlatMatchFilterExec {
                             &mut tokenizer,
                             &query_tokens,
                             query_operator,
-                        ) {
+                        )? {
                             matches[document.row_index] = true;
                         }
                     }
@@ -3896,7 +3883,7 @@ impl FlatMatchFilterExec {
                             column,
                         )));
                     }
-                };
+                }?;
                 Ok(arrow::compute::filter_record_batch(&batch, &predicate)?)
             }
         });
@@ -5372,14 +5359,17 @@ mod tests {
     use lance_index::scalar::inverted::builder::ScoredDoc;
     use lance_index::scalar::inverted::query::{
         BooleanQuery, BoostQuery, CombinedFieldsQuery, FtsQuery, FtsSearchParams, MatchQuery,
-        Occur, Operator, PhraseQuery, collect_query_tokens, has_query_token,
+        Occur, Operator, PhraseQuery, collect_query_tokens, document_matches_query,
         try_collect_query_tokens,
     };
     use lance_index::scalar::inverted::{
         CombinedFieldColumn, DocumentGranularity, FTS_SCHEMA, InvertedIndex, Language, SCORE_COL,
-        build_combined_bm25_scorer, build_global_bm25_scorer, prepare_bm25_query,
+        build_combined_bm25_scorer, build_global_bm25_scorer, flat_full_text_search,
+        prepare_bm25_query,
     };
-    use lance_index::scalar::{FullTextSearchQuery, InvertedIndexParams};
+    use lance_index::scalar::{
+        FullTextSearchQuery, InvertedIndexParams, MaxSubDocsPerRowExceedAction,
+    };
     use lance_index::{IndexCriteria, IndexType};
     use lance_table::format::IndexMetadata;
     use uuid::Uuid;
@@ -5398,8 +5388,7 @@ mod tests {
         CrossColumnCompoundQueryExec, FTS_SEGMENT_BIND_DURATION_METRIC, FlatMatchFilterExec,
         FlatMatchQueryExec, MatchQueryExec, PhraseQueryExec, WAND_TIE_COMPLETION_BUDGET,
         WandExactnessCertificate, build_boolean_query_children,
-        classify_wand_exactness_certificate, default_text_tokenizer, open_fts_segments,
-        tokenizer_for_match_query,
+        classify_wand_exactness_certificate, open_fts_segments, tokenizer_for_match_query,
     };
     use crate::io::exec::utils::IndexMetrics;
     use datafusion::physical_plan::empty::EmptyExec;
@@ -5707,30 +5696,46 @@ mod tests {
     }
 
     #[test]
-    fn document_match_filter_respects_document_boundary() {
-        let mut tokenizer = default_text_tokenizer();
-        let query_tokens = try_collect_query_tokens("alpha", &mut tokenizer).unwrap();
-        assert!(super::document_matches_query(
-            "alpha beta",
-            &mut tokenizer,
-            &query_tokens,
-            Operator::Or,
-        ));
-
-        let mut tokenizer = default_text_tokenizer();
-        let query_tokens = try_collect_query_tokens("alpha beta", &mut tokenizer).unwrap();
-        assert!(!super::document_matches_query(
-            "alpha",
-            &mut tokenizer,
-            &query_tokens,
-            Operator::And,
-        ));
-        assert!(super::document_matches_query(
-            "alpha beta",
-            &mut tokenizer,
-            &query_tokens,
-            Operator::And,
-        ));
+    fn json_flat_filters_propagate_sub_doc_limit() -> lance_core::Result<()> {
+        let params: InvertedIndexParams = serde_json::from_value(serde_json::json!({
+            "lance_tokenizer": "json",
+            "json_tokenizer_mode": "flattened_sub_docs",
+            "max_sub_docs_per_row": 2
+        }))?;
+        let batch = arrow_array::record_batch!(
+            ("_rowid", UInt64, [0, 1, 2]),
+            (
+                "json",
+                Utf8,
+                [Some(r#"{"a":["x","x","x"]}"#), Some(r#"{"a":["x"]}"#), None]
+            )
+        )?;
+        let text = "a[*],str,x";
+        let query = try_collect_query_tokens(text, &mut params.build()?)?;
+        let filter = |params: &InvertedIndexParams| {
+            FlatMatchFilterExec::find_matches::<i32>(
+                batch["json"].as_ref(),
+                &mut params.build()?,
+                &query,
+                Operator::Or,
+            )
+        };
+        let scan = |params: &InvertedIndexParams| {
+            flat_full_text_search(&[&batch], "json", text, Some(params.build()?))
+        };
+        for result in [filter(&params).map(|_| ()), scan(&params).map(|_| ())] {
+            let error = result.unwrap_err();
+            assert!(matches!(error, lance_core::Error::InvalidInput { .. }));
+            assert!(error.to_string().contains("max_sub_docs_per_row=2"));
+        }
+        let params =
+            params.max_sub_docs_per_row_exceed_action(MaxSubDocsPerRowExceedAction::SkipRow);
+        assert_eq!(
+            filter(&params)?,
+            arrow_array::BooleanArray::from(vec![false, true, false])
+        );
+        assert_eq!(scan(&params)?, vec![1]);
+        Ok(())
     }
 
     #[tokio::test]
@@ -5864,7 +5869,8 @@ mod tests {
             &mut tokenizer,
             &query_tokens,
             Operator::Or,
-        );
+        )
+        .unwrap();
 
         assert_eq!(result.len(), 3);
         assert!(result.value(0), "expected match in 'hello world'");
@@ -5934,9 +5940,11 @@ mod tests {
         )
         .await
         .unwrap();
-        assert!(has_query_token("hello", &mut tokenizer, &query_tokens));
         assert!(
-            !has_query_token("HELLO", &mut tokenizer, &query_tokens),
+            document_matches_query("hello", &mut tokenizer, &query_tokens, Operator::Or).unwrap()
+        );
+        assert!(
+            !document_matches_query("HELLO", &mut tokenizer, &query_tokens, Operator::Or).unwrap(),
             "legacy FTS indices should continue using on-disk tokenizer params"
         );
     }
