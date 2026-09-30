@@ -71,6 +71,7 @@ use lance_index::pbold::InvertedIndexDetails;
 use lance_index::scalar::FullTextSearchQuery;
 use lance_index::scalar::expression::PlannerIndexExt;
 use lance_index::scalar::expression::ScalarIndexExpr;
+use lance_index::scalar::inverted::document_tokenizer::JsonTokenizerMode;
 use lance_index::scalar::inverted::query::{
     CombinedFieldsQuery, FtsQuery, FtsQueryNode, FtsSearchParams, MatchQuery, Operator,
     PhraseQuery, fill_fts_query_column,
@@ -4893,6 +4894,18 @@ impl Scanner {
                 let Some(index) = index else {
                     return Ok(None);
                 };
+
+                // New JSON indices persist their document mode in index metadata.
+                // Boolean composition must happen after each leaf collapses to rows.
+                if index.index_details.is_some()
+                    && load_physical_fts_details(&self.dataset, &column, &index)
+                        .await?
+                        .json_tokenizer_mode
+                        .as_deref()
+                        == Some(JsonTokenizerMode::FlattenedSubDocs.as_ref())
+                {
+                    return Ok(None);
+                }
 
                 let (unindexed_fragments, overlay_plan) = futures::future::try_join(
                     self.dataset.unindexed_fragments(&index.name),

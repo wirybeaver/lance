@@ -3,6 +3,7 @@
 
 use super::partition::FuzzyAutomaton;
 use super::*;
+use crate::scalar::inverted::collapse_scored_rows;
 
 const LANCE_FTS_REUSE_PREPARED_SCORER_ENV: &str = "LANCE_FTS_REUSE_PREPARED_SCORER";
 
@@ -348,7 +349,10 @@ impl InvertedIndex {
                 if !seen_source_terms.insert(source_term) {
                     continue;
                 }
-                let automaton = FuzzyAutomaton::new(source_term, tokens.token_type(), params)?;
+                let token_params =
+                    fuzzy_params_for_token(self.params.json_tokenizer_mode, source_term, params);
+                let automaton =
+                    FuzzyAutomaton::new(source_term, tokens.token_type(), &token_params)?;
                 self.collect_fuzzy_candidates_with_automaton(
                     &automaton,
                     remaining,
@@ -652,22 +656,36 @@ impl InvertedIndex {
             || *LANCE_FTS_REUSE_PREPARED_SCORER_ENABLED,
         );
 
-        let limit = params.limit.unwrap_or(usize::MAX);
-        if limit == 0 {
+        let requested_limit = params.limit.unwrap_or(usize::MAX);
+        if requested_limit == 0 {
             return Ok(Vec::new());
         }
+        let should_deduplicate_rows =
+            self.params.json_tokenizer_mode == Some(JsonTokenizerMode::FlattenedSubDocs);
+        let search_limit = if should_deduplicate_rows {
+            usize::MAX
+        } else {
+            requested_limit
+        };
+        let search_params = if should_deduplicate_rows {
+            let mut params = params.as_ref().clone();
+            params.limit = None;
+            Arc::new(params)
+        } else {
+            params.clone()
+        };
         let mask = prefilter.mask();
-        if self.is_legacy() {
+        let documents = if self.is_legacy() {
             let (row_ids, scores) = self
                 .bm25_search_legacy(
                     tokens,
-                    params,
+                    search_params,
                     operator,
                     mask,
                     metrics,
                     scorer,
                     impact_scorer,
-                    limit,
+                    search_limit,
                 )
                 .await?;
             Ok(row_ids
@@ -678,16 +696,29 @@ impl InvertedIndex {
         } else {
             self.bm25_search_modern(ModernSearchRequest {
                 tokens,
-                params,
+                params: search_params,
                 operator,
                 mask,
                 metrics,
                 scorer,
                 impact_scorer,
-                limit,
+                limit: search_limit,
                 initial_score_floor,
             })
             .await
+        }?;
+        if should_deduplicate_rows {
+            Ok(collapse_scored_rows(
+                documents
+                    .into_iter()
+                    .map(|document| (document.row_id, document.score.0)),
+                requested_limit,
+            )
+            .into_iter()
+            .map(|(row_id, score)| ScoredDoc::new(row_id, score))
+            .collect())
+        } else {
+            Ok(documents)
         }
     }
 
@@ -1232,7 +1263,6 @@ impl InvertedIndex {
         Ok(resolved_documents)
     }
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;

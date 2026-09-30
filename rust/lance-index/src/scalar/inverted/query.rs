@@ -1238,6 +1238,7 @@ pub fn document_matches_query(
 }
 
 /// Return whether any query token matches, treating tokenization errors as no match.
+#[deprecated(note = "use document_matches_query to propagate tokenization errors")]
 pub fn has_query_token(
     text: &str,
     tokenizer: &mut Box<dyn LanceTokenizer>,

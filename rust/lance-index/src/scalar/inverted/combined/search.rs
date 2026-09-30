@@ -61,6 +61,8 @@ impl RankedDoc {
 /// `operator` applies across the virtual field: `And` keeps only docs where
 /// every query term appears in at least one column; `Or` keeps docs matching
 /// any term. Per-column `boost` is folded into `tf'`.
+///
+/// Target columns must pass [`super::validate_combined_tokenizers`] before scoring.
 pub async fn combined_fields_search(
     columns: &[CombinedFieldColumn],
     tokens: &Tokens,
