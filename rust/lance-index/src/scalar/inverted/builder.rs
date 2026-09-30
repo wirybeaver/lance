@@ -232,6 +232,10 @@ impl InvertedIndexBuilder {
         self
     }
 
+    pub(crate) fn params(&self) -> &InvertedIndexParams {
+        &self.params
+    }
+
     pub async fn update(
         &mut self,
         new_data: SendableRecordBatchStream,
