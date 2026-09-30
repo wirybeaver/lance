@@ -15,6 +15,7 @@ use datafusion::error::DataFusionError;
 use datafusion::execution::SendableRecordBatchStream;
 use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
 use futures::StreamExt;
+use lance_arrow::{iter_str_array, json::JsonValues};
 use lance_core::{
     ROW_ID,
     datatypes::{Field, LogicalType, Schema, format_field_path, parse_field_path},
@@ -99,6 +100,21 @@ impl ResolvedFtsField {
                 self.root_column
             ))
         })?;
+        let schema = batch.schema();
+        let field = schema.field_with_name(&self.root_column)?;
+        if let Some(json_values) = JsonValues::try_new(field, column) {
+            let text_values = json_values.to_text();
+            return Ok(iter_str_array(text_values.as_ref())
+                .enumerate()
+                .filter_map(|(row_index, text)| {
+                    text.map(|text| FtsDocument {
+                        row_index,
+                        text: text.to_owned(),
+                        doc_index: Vec::new(),
+                    })
+                })
+                .collect());
+        }
         self.documents_from_array(column, batch.num_rows())
     }
 
@@ -108,6 +124,9 @@ impl ResolvedFtsField {
             DocumentGranularity::Row => {
                 documents.reserve(num_rows);
                 for row_index in 0..num_rows {
+                    if column.is_null(row_index) {
+                        continue;
+                    }
                     let mut text = String::new();
                     append_row_text(&self.traversal, column.as_ref(), row_index, &mut text)?;
                     documents.push(FtsDocument {
