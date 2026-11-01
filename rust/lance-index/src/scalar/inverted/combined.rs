@@ -38,6 +38,7 @@ pub use flat::flat_combined_fields_search_stream;
 pub use search::combined_fields_search;
 pub use stats::{CombinedCorpusStats, FlatFieldStats, build_combined_bm25_scorer};
 
+use super::document_tokenizer::JsonTokenizerMode;
 use super::index::InvertedIndex;
 use super::query::Tokens;
 
@@ -76,7 +77,18 @@ fn unique_terms(tokens: &Tokens) -> Vec<String> {
 /// identical index/tokenizer configuration. BM25F is only well-defined when the
 /// fields tokenize the same way, so mixing configurations is an error rather
 /// than a silently wrong score. The error lists the offending columns.
+/// Flattened JSON is unsupported because row-level blending loses array constraints.
 pub fn validate_combined_tokenizers(columns: &[CombinedFieldColumn]) -> Result<()> {
+    for column in columns {
+        if column.indices.iter().any(|index| {
+            index.params().json_tokenizer_mode == Some(JsonTokenizerMode::FlattenedSubDocs)
+        }) {
+            return Err(Error::not_supported(format!(
+                "combined_fields does not support flattened JSON column '{}'; use MatchQuery or BooleanQuery to preserve array constraints",
+                column.column,
+            )));
+        }
+    }
     // A column with no index has no tokenizer to disagree with, so it is skipped.
     let mut indexed = columns
         .iter()

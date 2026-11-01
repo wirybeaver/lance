@@ -3,7 +3,7 @@
 
 use super::{InvertedIndexParams, index::*};
 use crate::scalar::RowAddrTranslatorRef;
-use crate::scalar::inverted::document_tokenizer::DocType;
+use crate::scalar::inverted::document_tokenizer::{DocType, JsonTokenizerMode};
 use crate::scalar::inverted::json::JsonTextStream;
 use crate::scalar::inverted::tokenizer::LEGACY_BLOCK_SIZE;
 use crate::scalar::inverted::tokenizer::document_tokenizer::LanceTokenizer;
@@ -283,6 +283,10 @@ impl InvertedIndexBuilder {
         self
     }
 
+    pub(crate) fn params(&self) -> &InvertedIndexParams {
+        &self.params
+    }
+
     pub async fn update(
         &mut self,
         new_data: SendableRecordBatchStream,
@@ -299,6 +303,11 @@ impl InvertedIndexBuilder {
         self.params
             .lance_tokenizer
             .get_or_insert_with(|| doc_type.as_ref().to_string());
+        if self.params.lance_tokenizer.as_deref() == Some("json")
+            && self.params.json_tokenizer_mode.is_none()
+        {
+            self.params.json_tokenizer_mode = Some(JsonTokenizerMode::FlattenedSubDocs);
+        }
 
         let new_data = document_input(new_data, doc_col)?;
 
